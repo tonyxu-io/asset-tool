@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>家庭资产配置工具</title>
+  <style>
+    :root{
+      --bg:#0f1115;--panel:#161a22;--text:#e5e7eb;--muted:#94a3b8;--accent:#22c55e;--danger:#ef4444;
+    }
+    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text);}
+    .wrap{max-width:1000px;margin:0 auto;padding:24px;}
+    h1{margin:0 0 8px;font-size:22px;}
+    .sub{color:var(--muted);font-size:13px;margin-bottom:16px;}
+    .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));}
+    .card{background:var(--panel);border-radius:16px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+    label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px;}
+    input,select{width:100%;padding:8px 10px;border-radius:10px;border:1px solid #2f3542;background:#0b0e14;color:var(--text)}
+    table{width:100%;border-collapse:collapse;font-size:13px;}
+    th,td{padding:8px;border-bottom:1px solid #2a2f3b;text-align:left;}
+    th{color:#cbd5e1;font-weight:600}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#0b0e14;border:1px solid #2f3542;color:#cbd5e1;font-size:12px;}
+    .row{display:flex;gap:10px;align-items:center;}
+    .bar{height:10px;border-radius:999px;background:#0b0e14;border:1px solid #2f3542;overflow:hidden}
+    .bar > div{height:100%;}
+    .accent{color:var(--accent)}
+    .danger{color:var(--danger)}
+    .small{font-size:12px;color:var(--muted)}
+    .footer{margin-top:16px;color:var(--muted);font-size:12px}
+    button{background:#262b36;color:var(--text);border:1px solid #2f3542;padding:8px 12px;border-radius:10px;cursor:pointer}
+    button:hover{border-color:var(--accent)}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>家庭资产配置工具</h1>
+  <div class="sub">根据风险偏好给出配置建议，预测长期收益区间，并提供依据（可调假设）</div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>输入</h3>
+      <label>家庭可投资资产（现有）</label>
+      <input id="principal" type="number" value="500000" />
+      <label>每月新增投入</label>
+      <input id="monthly" type="number" value="5000" />
+      <label>投资期限（年）</label>
+      <input id="years" type="number" value="20" />
+      <label>风险偏好</label>
+      <select id="risk">
+        <option value="conservative">保守</option>
+        <option value="balanced" selected>稳健</option>
+        <option value="growth">成长</option>
+        <option value="aggressive">激进</option>
+        <option value="custom">自定义</option>
+      </select>
+      <label>通胀假设（年）</label>
+      <input id="inflation" type="number" step="0.1" value="2.5" />
+      <div style="margin-top:12px" class="row">
+        <button id="recalc">重新计算</button>
+        <span class="small">* 数字为长期估计，不构成投资建议</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>配置建议</h3>
+      <table id="allocTable"></table>
+      <div class="small" id="allocNote"></div>
+    </div>
+
+    <div class="card">
+      <h3>长期收益与风险预测（名义）</h3>
+      <div id="summary"></div>
+      <div class="small">方法：简化随机游走（蒙特卡洛，月度），用于展示波动范围</div>
+    </div>
+
+    <div class="card">
+      <h3>依据（逻辑与假设）</h3>
+      <ul class="small" id="rationale"></ul>
+    </div>
+
+    <div class="card">
+      <h3>资产类别假设（可调）</h3>
+      <table id="assumptionTable"></table>
+      <div class="small">你可以调整长期收益率/波动率，结果会实时变化。</div>
+    </div>
+  </div>
+
+  <div class="footer">提示：若要更精准（税务/现金流/债务/房产/子女教育），可加更多输入项。</div>
+</div>
+
+<script>
+const assetAssumptions = {
+  cash:   {name:'现金/货基', r:2.0, vol:1.0},
+  bonds:  {name:'中长期债券', r:3.5, vol:6.0},
+  stocks: {name:'股票(全球/指数)', r:7.0, vol:18.0},
+  reit:   {name:'REITs/不动产', r:6.0, vol:15.0},
+  gold:   {name:'黄金/对冲', r:3.0, vol:20.0},
+};
+
+const profiles = {
+  conservative: {cash:30,bonds:50,stocks:10,reit:5,gold:5},
+  balanced:     {cash:10,bonds:40,stocks:35,reit:10,gold:5},
+  growth:       {cash:5,bonds:25,stocks:50,reit:15,gold:5},
+  aggressive:   {cash:5,bonds:10,stocks:70,reit:10,gold:5},
+};
+
+const rationaleMap = {
+  conservative: [
+    '以债券/现金为主，降低价格波动，适合短期或需要稳定现金流。',
+    '小比例权益类用于对抗通胀。',
+    '对最大回撤容忍度低。'
+  ],
+  balanced: [
+    '债券+权益均衡，兼顾稳健与增长。',
+    '适合中长期目标，同时控制波动。',
+    '分散于多资产以降低单一市场风险。'
+  ],
+  growth: [
+    '权益占比更高，追求长期复利增长。',
+    '波动更大，适合期限较长且现金流稳定家庭。',
+    '配置少量债券/黄金作为缓冲。'
+  ],
+  aggressive: [
+    '高权益仓位，长期收益期望更高但波动更大。',
+    '适合高风险承受能力与超长周期目标。',
+    '需接受阶段性较大回撤。'
+  ]
+};
+
+const allocTable = document.getElementById('allocTable');
+const assumptionTable = document.getElementById('assumptionTable');
+const summary = document.getElementById('summary');
+const rationale = document.getElementById('rationale');
+const allocNote = document.getElementById('allocNote');
+
+function weightedReturn(alloc){
+  let r = 0;
+  for (const k in alloc){
+    r += (alloc[k]/100) * assetAssumptions[k].r;
+  }
+  return r;
+}
+
+function weightedVol(alloc){
+  // 简化：忽略相关性
+  let v2 = 0;
+  for (const k in alloc){
+    const w = alloc[k]/100;
+    v2 += (w*w) * (assetAssumptions[k].vol**2);
+  }
+  return Math.sqrt(v2);
+}
+
+function monteCarlo(principal, monthly, years, r, vol){
+  const months = years*12;
+  const mu = r/100;
+  const sigma = vol/100;
+  const dt = 1/12;
+  const sims = 5000;
+  const results = [];
+
+  for (let i=0;i<sims;i++){
+    let v = principal;
+    for (let m=0;m<months;m++){
+      // 正态分布近似
+      const z = Math.sqrt(-2*Math.log(Math.random())) * Math.cos(2*Math.PI*Math.random());
+      const growth = (mu - 0.5*sigma*sigma)*dt + sigma*Math.sqrt(dt)*z;
+      v = v * Math.exp(growth) + monthly;
+    }
+    results.push(v);
+  }
+  results.sort((a,b)=>a-b);
+  const p10 = results[Math.floor(sims*0.1)];
+  const p50 = results[Math.floor(sims*0.5)];
+  const p90 = results[Math.floor(sims*0.9)];
+  return {p10,p50,p90};
+}
+
+function fmt(n){
+  return n.toLocaleString('en-US',{maximumFractionDigits:0});
+}
+
+function renderAssumptions(){
+  let html = '<tr><th>类别</th><th>预期年化(%)</th><th>波动(%)</th></tr>';
+  for (const k in assetAssumptions){
+    const a = assetAssumptions[k];
+    html += `<tr>
+      <td>${a.name}</td>
+      <td><input data-k="${k}" data-f="r" type="number" step="0.1" value="${a.r}"/></td>
+      <td><input data-k="${k}" data-f="vol" type="number" step="0.1" value="${a.vol}"/></td>
+    </tr>`;
+  }
+  assumptionTable.innerHTML = html;
+  assumptionTable.querySelectorAll('input').forEach(inp=>{
+    inp.addEventListener('change', e=>{
+      const k = e.target.dataset.k;
+      const f = e.target.dataset.f;
+      assetAssumptions[k][f] = parseFloat(e.target.value);
+      recalc();
+    });
+  });
+}
+
+function renderAlloc(alloc){
+  let html = '<tr><th>资产</th><th>占比</th><th>权重条</th></tr>';
+  for (const k in alloc){
+    const pct = alloc[k];
+    html += `<tr>
+      <td>${assetAssumptions[k].name}</td>
+      <td>${pct}%</td>
+      <td><div class="bar"><div style="width:${pct}%;background:var(--accent)"></div></div></td>
+    </tr>`;
+  }
+  allocTable.innerHTML = html;
+}
+
+function recalc(){
+  const principal = parseFloat(document.getElementById('principal').value || 0);
+  const monthly = parseFloat(document.getElementById('monthly').value || 0);
+  const years = parseFloat(document.getElementById('years').value || 0);
+  const risk = document.getElementById('risk').value;
+  const inflation = parseFloat(document.getElementById('inflation').value || 0);
+
+  const alloc = risk === 'custom' ? profiles.balanced : profiles[risk];
+  renderAlloc(alloc);
+
+  const r = weightedReturn(alloc);
+  const vol = weightedVol(alloc);
+  const realR = r - inflation;
+  const mc = monteCarlo(principal, monthly, years, r, vol);
+
+  summary.innerHTML = `
+    <div class="row"><span class="pill">期望年化</span> <strong class="accent">${r.toFixed(1)}%</strong> <span class="small">(扣通胀约 ${realR.toFixed(1)}%)</span></div>
+    <div class="row" style="margin-top:6px"><span class="pill">年化波动</span> <strong class="danger">${vol.toFixed(1)}%</strong></div>
+    <div style="margin-top:10px">
+      <div>期限 ${years} 年预测区间：</div>
+      <ul>
+        <li>保守(10分位)：约 <strong>${fmt(mc.p10)}</strong></li>
+        <li>中位(50分位)：约 <strong>${fmt(mc.p50)}</strong></li>
+        <li>乐观(90分位)：约 <strong>${fmt(mc.p90)}</strong></li>
+      </ul>
+    </div>
+  `;
+
+  const rlist = rationaleMap[risk === 'custom' ? 'balanced' : risk];
+  rationale.innerHTML = rlist.map(x=>`<li>${x}</li>`).join('') +
+    '<li>假设来自长期资产收益/波动的经验区间，用于比较不同配置的相对风险收益。</li>' +
+    '<li>分散化通常能降低组合波动，但无法消除市场下跌风险。</li>';
+
+  allocNote.textContent = risk==='custom'
+    ? '自定义模式：当前沿用“稳健”配置，稍后可加自定义滑块。'
+    : '可切换风险偏好，或调整下方假设参数。';
+}
+
+renderAssumptions();
+recalc();
+
+document.getElementById('recalc').addEventListener('click', recalc);
+</script>
+</body>
+</html>
